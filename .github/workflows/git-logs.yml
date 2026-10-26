@@ -1,1 +1,195 @@
+name: Git Logs
 
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  discord-log:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --disable-pip-version-check PyYAML
+
+      - name: Send Git Log to Discord
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import re
+          import urllib.parse
+          import urllib.request
+          import yaml
+          from datetime import datetime, timezone
+
+          with open(".github/discord.yml", "r", encoding="utf-8") as f:
+              config = yaml.safe_load(f)
+
+          with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as f:
+              event = json.load(f)
+
+          webhook = os.environ["DISCORD_WEBHOOK"].strip()
+          if not webhook:
+              raise SystemExit("DISCORD_WEBHOOK is empty")
+
+          commit = event.get("head_commit")
+          if not commit:
+              raise SystemExit("No head_commit found in GitHub event")
+
+          repository = event.get("repository", {})
+          repository_name = repository.get("full_name", "")
+          sha = commit.get("id", "")
+          commit_url = commit.get("url") or f"https://github.com/{repository_name}/commit/{sha}"
+
+          raw_message = (commit.get("message") or "").strip() or "No commit message"
+          title = raw_message.splitlines()[0].strip()
+
+          title = re.sub(
+              r"^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]*\))?!?:\s*",
+              "",
+              title,
+              flags=re.IGNORECASE
+          ).strip()
+
+          quoted_message = "\n".join(
+              f"> {line}" if line.strip() else ">"
+              for line in raw_message.splitlines()
+          )
+
+          github_username = (
+              event.get("sender", {}).get("login")
+              or commit.get("author", {}).get("username")
+              or "unknown"
+          )
+
+          avatar_url = event.get("sender", {}).get("avatar_url")
+          if not avatar_url:
+              avatar_url = f"https://github.com/{github_username}.png"
+
+          branch = event.get("ref", "").removeprefix("refs/heads/") or "unknown"
+
+          timestamp = commit.get("timestamp")
+          dt = (
+              datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+              if timestamp
+              else datetime.now(timezone.utc)
+          )
+
+          date = dt.strftime("%b %-d, %Y")
+          time = dt.strftime("%-I:%M %p")
+
+          def render_text(content):
+              replacements = {
+                  "{commit.short_hash}": sha[:7],
+                  "{commit.title}": title,
+                  "{commit.message}": quoted_message,
+                  "{commit.author}": "Nikzz",
+                  "{commit.branch}": branch,
+                  "{commit.date}": date,
+                  "{commit.time}": time,
+                  "{commit.url}": commit_url,
+                  "{commit.avatar}": avatar_url
+              }
+              for key, value in replacements.items():
+                  content = content.replace(key, str(value))
+              return content
+
+          def render_component(component):
+              component_type = component.get("type")
+
+              if component_type == "text":
+                  return {
+                      "type": 10,
+                      "content": render_text(component.get("content", ""))
+                  }
+
+              if component_type == "separator":
+                  spacing = component.get("spacing", "small")
+                  return {
+                      "type": 14,
+                      "divider": component.get("divider", True),
+                      "spacing": {"small": 1, "large": 2}.get(spacing, 1)
+                  }
+
+              raise ValueError(f"Unsupported Components V2 type: {component_type}")
+
+          container_cfg = config["discord"]["container"]
+
+          components = [
+              render_component(component)
+              for component in container_cfg.get("components", [])
+          ]
+
+          payload = {
+              "username": config["discord"]["message"].get("username", "git-logs"),
+              "avatar_url": avatar_url,
+              "flags": 32768,
+              "components": [
+                  {
+                      "type": 17,
+                      "components": components,
+                      "accent_color": int(container_cfg.get("accent_color", 0))
+                  }
+              ]
+          }
+
+          parsed = urllib.parse.urlsplit(webhook)
+
+          query = [
+              (key, value)
+              for key, value in urllib.parse.parse_qsl(
+                  parsed.query,
+                  keep_blank_values=True
+              )
+              if key != "with_components"
+          ]
+
+          query.append(("with_components", "true"))
+
+          webhook_url = urllib.parse.urlunsplit(
+              (
+                  parsed.scheme,
+                  parsed.netloc,
+                  parsed.path,
+                  urllib.parse.urlencode(query),
+                  parsed.fragment
+              )
+          )
+
+          data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+          request = urllib.request.Request(
+              webhook_url,
+              data=data,
+              headers={
+                  "Content-Type": "application/json",
+                  "User-Agent": "git-logs/1.0"
+              },
+              method="POST"
+          )
+
+          try:
+              with urllib.request.urlopen(request) as response:
+                  print(f"Discord webhook sent: HTTP {response.status}")
+          except urllib.error.HTTPError as error:
+              error_body = error.read().decode("utf-8", errors="replace")
+              print(f"Discord webhook failed: {error.code} {error.reason}")
+              print(error_body)
+              raise SystemExit(1)
+          PY
