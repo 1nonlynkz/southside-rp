@@ -1,1 +1,40 @@
+version: 1
+
+discord:
+  components_v2: true
+
+  webhook:
+    secret: DISCORD_WEBHOOK
+
+  message:
+    username: "git-logs"
+
+  container:
+    accent_color: 5793266
+
+    components:
+
+      - type: text
+        content: |
+          # [Southside Roleplay (GTA)]({commit.url})
+
+          Author: [itsme-nikzz](https://nikzdev.vercel.app/)
+          Branch: {commit.branch}
+          Date: {commit.date}
+
+      - type: separator
+        divider: true
+        spacing: small
+
+      - type: text
+        content: |
+          {commit.message}
+
+      - type: separator
+        divider: true
+        spacing: small
+
+      - type: text
+        content: |
+          -# Southside Development | {commit.time}
 
